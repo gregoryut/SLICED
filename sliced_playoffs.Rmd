@@ -204,6 +204,10 @@ pred_df <- xg_best_fit %>%
   augment(test, type = "prob") %>%
   select(bip_id, is_home_run = .pred_1)
 
+
+
+
+# Score = 0.08281
 write_csv(pred_df, "xg_boost_ready3.csv")
 
 
