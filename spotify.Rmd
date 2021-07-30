@@ -1,0 +1,183 @@
+---
+title: "ep5"
+author: "gregory_ut"
+date: "7/30/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# packages ----------------------------------------------------------------
+
+library(tidyverse)
+library(here)
+library(lubridate)
+library(tidymodels)
+library(tidytext)
+```
+
+
+
+```{r}
+# import data -------------------------------------------------------------
+
+test_raw <- read_csv(here("ep5", "test.csv"))
+
+train_raw <- read_csv(here("ep5", "train.csv"))
+
+
+artists_raw <- read_csv(here("ep5", "artists.csv"))
+
+
+glimpse(train_raw)
+
+
+# plot hists
+train_raw %>%
+  select(where(is.numeric)) %>%
+  select(-id) %>%
+  pivot_longer(everything()) %>%
+  ggplot(aes(value)) +
+  geom_histogram() +
+  facet_wrap(~name, scales = "free") +
+  theme_minimal()
+
+
+### take log duration_ms
+### take log instrumentalness
+### take log liveness 
+### take log speechinesss
+
+train_raw %>%
+  select(duration_ms, instrumentalness, liveness, speechiness) %>%
+  pivot_longer(everything()) %>%
+  mutate(value = ifelse(is.na(value), 0, value)) %>%
+  ggplot(aes(value)) +
+  geom_histogram() +
+  facet_wrap(~name, scales = "free") +
+  scale_x_log10() +
+  theme_minimal()
+
+
+glimpse(artists_raw)
+
+
+
+
+ggplot(artists_raw, aes(popularity)) +
+  geom_histogram()
+
+
+ggplot(train_raw, aes(popularity)) +
+  geom_histogram()
+
+artists_raw %>%
+  count(id, sort = TRUE)
+
+```
+
+
+
+```{r}
+
+full_train <- train_raw %>%
+  select(-id) %>%
+  mutate(
+    log_duration_ms = log(duration_ms),
+    log_instrumentalness = log(instrumentalness),
+    log_liveness = log(liveness),
+    log_speechiness = log(speechiness),
+    artists = str_remove_all(artists, "\\[|\\]|\\'"),
+    # clean up
+    id_artists = str_remove_all(id_artists, "\\[|\\]|\\'"),
+    # clean up
+    key = factor(key)
+  ) %>%
+  left_join(
+    artists_raw %>% select(id_artists = id , followers, genres),
+    by = "id_artists",
+    suffix = c("_1", "_2")
+  ) %>%
+  mutate(genres = str_remove_all(genres, "\\[|\\]|\\'")) %>%
+  unnest_tokens(text, genres) %>%
+  mutate(genres = fct_lump(text, n = 20))
+
+
+# some NLP
+full_train %>%
+  count(genres) %>%
+  ggplot(aes(fct_reorder(genres, n), n)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  coord_flip() +
+  theme_minimal()
+
+
+
+
+
+test_full <- test_raw %>%
+  mutate(log_duration_ms = log(duration_ms),
+         log_instrumentalness = log(instrumentalness),
+         log_liveness = log(liveness),
+         log_speechiness = log(speechiness),
+         artists = str_remove_all(artists, "\\[|\\]|\\'"),
+         id_artists = str_remove_all(id_artists, "\\[|\\]|\\'"),
+         key = factor(key)) %>%
+left_join(artists_raw %>% select(id_artists = id , followers, genres), by = "id_artists", 
+          suffix = c("_1", "_2"))
+
+```
+  
+```{r}
+
+folds <- vfold_cv(full_train, v = 10)
+
+
+rec <- recipe(popularity ~ danceability + energy + key + loudness + acousticness +
+                valence + tempo + followers + release_year + duration_ms + liveness + instrumentalness + speechiness, 
+              data = full_train) %>%
+  step_dummy(all_nominal_predictors())
+
+
+bag_spec <-
+  baguette::bag_tree(cost_complexity = tune(), tree_depth = tune()) %>%
+  set_engine('rpart') %>%
+  set_mode('regression')
+
+
+
+ranger_wf <- workflow() %>%
+  add_model(bag_spec) %>%
+  add_recipe(rec)
+
+
+tune_rang <- ranger_wf %>%
+  tune_grid(folds,
+            metrics = metric_set(rmse),
+            control = control_grid(verbose = TRUE))
+
+autoplot(tune_rang)
+
+bag_best <- ranger_wf %>%
+  finalize_workflow(select_best(tune_rang))
+
+
+bag_best_fit <- bag_best %>%
+  fit(full_train)
+
+
+bag_best_fit %>%
+  augment(test_full) %>%
+  select(id, popularity = .pred) %>%
+  write_csv('sub.csv')
+
+
+
+
+
+
+```
+
+
+
