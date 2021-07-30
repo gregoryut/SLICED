@@ -1,0 +1,224 @@
+---
+title: "sliced_playoffs"
+author: "gregory_ut"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(tidymodels)
+library(here)
+library(lubridate)
+library(finetune) # thanks to Julia Silge for intro.
+```
+
+# Load data & EDA 
+```{r}
+
+train <- read_csv(here("playoffs", "train.csv"))
+
+test <- read_csv(here("playoffs", "test.csv"))
+
+opt <- read_csv(here("playoffs", "park_dimensions.csv"))
+
+# join to extra data on field dimesnions 
+train <- train %>%
+  left_join(opt, by = c("park" = "park")) 
+
+
+test <- test %>%
+  left_join(opt, by = c("park" = "park"))
+
+glimpse(train)
+
+
+# 
+train %>%
+  ggplot(aes(plate_x, plate_z, z = is_home_run)) +
+  stat_summary_hex(alpha = 0.8, bins = 11) +
+  scale_fill_viridis_c(labels = scales::percent) +
+  labs(fill = "% home runs") +
+  theme_minimal()
+
+train %>%
+  ggplot(aes(launch_angle, launch_speed, z = is_home_run)) +
+  stat_summary_hex(alpha = 0.8, bins = 15) +
+  scale_fill_viridis_c(labels = scales::percent) +
+  labs(fill = "% home runs") +
+  theme_minimal()
+
+train %>%
+  count(bb_type, sort = TRUE)
+
+skimr::skim(train)
+summary(train)
+```
+
+
+
+
+```{r}
+train <- train %>%
+  mutate(is_home_run = factor(is_home_run),
+         bb_type = replace_na(bb_type, "None"),
+         is_batter_lefty = factor(ifelse(is_batter_lefty == 1, "yes", "no")),
+         is_pitcher_lefty = factor(ifelse(is_pitcher_lefty == 1, "yes", "no")),
+         outs_when_up = factor(outs_when_up),
+         strikes = factor(strikes),
+         batter_name = fct_lump(batter_name, 20),
+         pitcher_name = fct_lump(pitcher_name, 20),
+         #launch_speed = ifelse(is.na(launch_speed), median(launch_speed, na.rm = TRUE), launch_speed),
+         #launch_angle = ifelse(is.na(launch_angle), median(launch_angle, na.rm = TRUE), launch_angle),
+         inning = factor(inning),
+         balls = factor(balls),
+         park = factor(park)
+         )
+
+test <- test %>%
+  mutate(
+    bb_type = replace_na(bb_type, "None"),
+    is_batter_lefty = factor(ifelse(is_batter_lefty == 1, "yes", "no")),
+    is_pitcher_lefty = factor(ifelse(is_pitcher_lefty == 1, "yes", "no")),
+    outs_when_up = factor(outs_when_up),
+    strikes = factor(strikes),
+    batter_name = fct_lump(batter_name, 20),
+    pitcher_name = fct_lump(pitcher_name, 20),
+    #launch_speed = ifelse(
+    #  is.na(launch_speed),
+    #  median(launch_speed, na.rm = TRUE),
+    #  launch_speed
+   # ),
+    #launch_angle = ifelse(
+    #  is.na(launch_angle),
+    #  median(launch_angle, na.rm = TRUE),
+    #  launch_angle
+  #  ),
+    inning = factor(inning),
+    balls = factor(balls),
+    park = factor(park)
+  )
+```
+
+
+
+```{r}
+train %>%
+  select(where(is.numeric)) %>%
+  pivot_longer(everything()) %>%
+  ggplot(aes(value)) +
+  geom_histogram() +
+  facet_wrap(~name, scales = "free") +
+  theme_minimal()
+
+```
+
+```{r}
+folds <- train %>%
+  vfold_cv(v = 10)
+
+
+# check for imputation
+summary(lm(launch_speed ~ plate_x + plate_z + pitch_mph + bb_type + 
+             inning + outs_when_up, data = train))
+
+summary(lm(launch_angle ~ plate_x + plate_z + pitch_mph + bb_type + 
+             inning + outs_when_up, data = train))
+
+
+xg_spec <-
+  boost_tree(
+    trees = tune(),
+    tree_depth = tune(),
+    mtry = tune(),
+    loss_reduction = tune(),
+    sample_size = tune(),
+    learn_rate = tune()
+  ) %>%
+  set_engine('xgboost') %>%
+  set_mode('classification')
+
+
+train %>%
+  select(where(is.numeric))
+
+rec <- recipe(is_home_run ~ is_batter_lefty + is_pitcher_lefty + bb_type + bearing + pitch_name + park + inning + outs_when_up + balls + strikes + plate_x + plate_z + pitch_mph + launch_speed + launch_angle + NAME + Cover + LF_Dim + CF_Dim + RF_Dim + LF_W + CF_W + RF_W, data = train) %>%
+  step_dummy(all_nominal_predictors(), one_hot = TRUE) %>%
+  step_impute_linear(launch_speed, launch_angle, impute_with = imp_vars(plate_x, plate_z, pitch_mph)) %>%
+  step_nzv(all_predictors())
+
+
+prep(rec)
+prep(rec) %>% bake(train)
+
+# workflow
+xg_wf <- workflow() %>%
+  add_model(xg_spec) %>%
+  add_recipe(rec)
+
+
+#new package finetune
+xg_tuned_anova <- 
+  tune_race_anova(
+    xg_wf,
+    folds,
+    grid = 15,
+    metrics = metric_set(mn_log_loss),
+    control = control_race(verbose = TRUE)
+  )
+
+xg_tuned_anova
+
+
+# plot model results to see which one pervaded. 
+plot_race(xg_tuned_anova)
+
+# show best model params
+show_best(xg_tuned_anova)
+
+# finalize model
+xg_best <- xg_wf %>%
+  finalize_workflow(select_best(xg_tuned_anova, metric = "mn_log_loss"))
+
+xg_best
+
+# fit on train data
+xg_best_fit <- xg_best %>%
+  fit(train)
+
+
+# show variable importance 
+xg_best_fit %>%
+  extract_fit_parsnip() %>%
+  vip::vip()
+
+# calcualte log loss
+xg_best_fit %>%
+  collect_predictions()
+  mn_log_loss(is_home_run, .pred_1)
+
+
+# predict on test set and save prediction for submission
+pred_df <- xg_best_fit %>%
+  augment(test, type = "prob") %>%
+  select(bip_id, is_home_run = .pred_1)
+
+write_csv(pred_df, "xg_boost_ready3.csv")
+
+
+
+
+
+
+
+
+
+```
+
+
+
+
+
+
+
