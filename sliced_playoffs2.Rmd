@@ -1,0 +1,168 @@
+---
+title: "playoffs_pt2"
+author: "gregory_ut"
+date: "8/3/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(tidymodels)
+library(here)
+library(lubridate)
+library(doParallel)
+library(parallel)
+library(finetune)
+
+train_raw <- read_csv(here("sliced-s01e10-playoffs-2", "train.csv"))
+test_raw <- read_csv(here("sliced-s01e10-playoffs-2", "test.csv"))
+
+dim(train_raw)
+
+colSums(is.na(train_raw))
+glimpse(train_raw)
+
+
+train_raw %>%
+  count(outcome_type)
+
+train_raw %>%
+  count(age_upon_outcome, breed, sort = TRUE)
+
+
+train_raw %>%
+  count(color, sort = TRUE)
+
+train_raw %>%
+  count(breed, sort = TRUE)
+
+
+
+train_df <- train_raw %>%
+  mutate(breed = fct_lump(breed, n = 15),
+         color = fct_lump(color, n = 10),
+         age_upon_outcome = fct_lump(age_upon_outcome, 10),
+         datetime = as.Date(datetime),
+         age_days = difftime(datetime, date_of_birth, units = "days"),
+         age_days = as.numeric(age_days)
+         )
+
+
+train_df %>%
+  count(age_days, sort = TRUE)
+
+train_df %>%
+  count(outcome_type)
+
+
+glimpse(train_df)
+
+
+train_df %>%
+  count(breed, sort = T)
+
+train_df %>%
+  count(color)
+
+train_df %>%
+  count(animal_type)
+
+train_df %>%
+  count(sex)
+
+train_df %>%
+  count(spay_neuter)
+
+train_df %>%
+  count(date_of_birth, sort = T)
+
+colSums(is.na(train_df))
+
+
+```
+
+
+```{r}
+rec1 <- recipe(outcome_type ~ breed + color + age_days + age_upon_outcome + animal_type + sex + spay_neuter, data = train_df) %>% 
+  step_dummy(all_nominal_predictors(), one_hot = TRUE)
+
+prep(rec1) %>% bake(train_df) %>% View()
+
+
+xgb_spec <-
+  boost_tree(
+    mode = "classification",
+    mtry = tune(),
+    trees = tune(),
+    tree_depth = tune(),
+    learn_rate = tune(),
+    min_n = tune(),
+    loss_reduction = tune()
+  ) %>%
+  set_engine("xgboost")
+
+
+xgb_wf <- workflow() %>%
+  add_model(xgb_spec) %>%
+  add_recipe(rec1)
+
+
+# create parallel processing
+cores <- parallel::detectCores(logical = FALSE)
+cores
+
+cl <- makePSOCKcluster(cores - 1)
+registerDoParallel(cl)
+
+
+# create folds for tuning
+folds <- train_df %>%
+  vfold_cv(v = 10, strata = outcome_type)
+
+
+# tune model (takes a while)...
+xgb_tuned <- tune_race_anova(
+  xgb_wf,
+  folds,
+  grid = 10,
+  metrics = metric_set(mn_log_loss),
+  control = control_race(verbose_elim = TRUE)
+)
+
+plot_race(xgb_tuned)
+         
+collect_metrics(xgb_tuned) %>%
+  arrange(desc(mean))
+
+xgb_best <- xgb_wf %>%
+  finalize_workflow(select_best(xgb_tuned))
+
+xgb_best_fit <- xgb_best %>%
+  fit(train_df)
+
+#plot variable importances
+xgb_best_fit %>%
+  extract_fit_parsnip() %>%
+  vip::vip(geom = "col", num_features = 15)
+
+
+# transform test data to fit with model
+test_df <- test_raw %>%
+   mutate(breed = fct_lump(breed, n = 15),
+         color = fct_lump(color, n = 10),
+         age_upon_outcome = fct_lump(age_upon_outcome, 10),
+         datetime = as.Date(datetime),
+         age_days = difftime(datetime, date_of_birth, units = "days"),
+         age_days = as.numeric(age_days)
+         )
+
+#save to df
+xgb_best_fit %>%
+  augment(test_df) %>% 
+  select(id, adoption = .pred_adoption, `no outcome` = `.pred_no outcome`, transfer = .pred_transfer) %>%
+  write_csv("sub_playoff3.csv")
+
+###private score 0.58800
+
+```
