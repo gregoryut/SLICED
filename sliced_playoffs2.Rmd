@@ -28,7 +28,7 @@ train_raw %>%
   count(outcome_type)
 
 train_raw %>%
-  count(age_upon_outcome, breed, sort = TRUE)
+  count(age_upon_outcome, sort = TRUE)
 
 
 train_raw %>%
@@ -45,9 +45,12 @@ train_df <- train_raw %>%
          age_upon_outcome = fct_lump(age_upon_outcome, 10),
          datetime = as.Date(datetime),
          age_days = difftime(datetime, date_of_birth, units = "days"),
-         age_days = as.numeric(age_days)
+         age_days = as.numeric(age_days),
+         months = factor(month(datetime))
          )
 
+
+glimpse(train_df)
 
 train_df %>%
   count(age_days, sort = TRUE)
@@ -55,6 +58,8 @@ train_df %>%
 train_df %>%
   count(outcome_type)
 
+train_df %>%
+  count(months)
 
 glimpse(train_df)
 
@@ -84,7 +89,8 @@ colSums(is.na(train_df))
 
 
 ```{r}
-rec1 <- recipe(outcome_type ~ breed + color + age_days + age_upon_outcome + animal_type + sex + spay_neuter, data = train_df) %>% 
+
+rec1 <- recipe(outcome_type ~ breed + color + age_days + age_upon_outcome + animal_type + sex + months + spay_neuter, data = train_df) %>% 
   step_dummy(all_nominal_predictors(), one_hot = TRUE)
 
 prep(rec1) %>% bake(train_df) %>% View()
@@ -154,7 +160,8 @@ test_df <- test_raw %>%
          age_upon_outcome = fct_lump(age_upon_outcome, 10),
          datetime = as.Date(datetime),
          age_days = difftime(datetime, date_of_birth, units = "days"),
-         age_days = as.numeric(age_days)
+         age_days = as.numeric(age_days),
+         months = factor(month(datetime))
          )
 
 #save to df

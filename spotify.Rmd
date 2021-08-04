@@ -167,6 +167,8 @@ bag_best_fit <- bag_best %>%
   fit(full_train)
 
 
+# private 12.34283
+# public 11.90851
 bag_best_fit %>%
   augment(test_full) %>%
   select(id, popularity = .pred) %>%
