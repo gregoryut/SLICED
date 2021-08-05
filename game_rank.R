@@ -2,7 +2,10 @@ library(tidyverse)
 library(tidymodels)
 library(tidytext)
 library(here)
-library(nnet)
+library(doParallel)
+library(parallel)
+theme_set(theme_minimal())
+
 
 df_train <- read_csv(here("ep3", "train.csv")) %>%
   janitor::clean_names()
@@ -12,27 +15,21 @@ df_test <- read_csv(here("ep3", "test.csv")) %>%
 
 glimpse(df_train)
 
-
-
-
 # do some EPA -------------------------------------------------------------
-
 
 # each rank appears 64 times - 63 times
 df_train %>% 
   count(rank, sort = TRUE) %>%
   tail()
 
+df_train %>% 
+  count(rank, sort = TRUE)
+
+
+
 df_train %>%
   count(game, sort = TRUE)
 
-
-df_train %>%
-  group_by(month) %>%
-  summarize(hours_watched_month =  sum(hours_watched)) %>%
-  ggplot(aes(month, hours_watched_month)) +
-  geom_point() +
-  geom_smooth()
 
 df_train %>%
   group_by(month) %>%
@@ -89,14 +86,6 @@ df_train %>%
 
 
 df_train %>%
-  mutate(rank = as.integer(rank)) %>%
-  filter(rank < 4) %>%
-  ggplot(aes(year, rank, color = game)) +
-  geom_point() +
-  geom_line()
-
-
-df_train %>%
   group_by(year, month) %>%
   summarize(sum_viewer_ratio_month =  sum(avg_viewer_ratio)) 
 
@@ -120,87 +109,126 @@ colSums(is.na(df_train))
 df_train <- df_train %>%
   mutate(game = case_when(is.na(game) ~ "Unknown Game NA",
                           TRUE ~ game),
-         rank = factor(rank))
+         rank = factor(rank),
+         month = factor(month), 
+         year = factor(year))
 
-df_train <- df_train %>%
-  select(-hours_watched)
+df_test <- df_test %>%
+  mutate(game = case_when(is.na(game) ~ "Unknown Game NA",
+                          TRUE ~ game),
+         month = factor(month), 
+         year = factor(year))
 
 
 
 
-# Xgboost -----------------------------------------------------------------
+glimpse(df_train)
 
+
+
+
+# updated model after wathing Nick's stream -------------------------------
 
 xgb_spec <-
-  boost_tree() %>%
+  boost_tree(mtry = tune(),
+             learn_rate = tune(),
+             trees = tune(),
+             tree_depth = tune(),
+             min_n = tune()) %>%
   set_engine('xgboost') %>%
-  set_mode('classification')
+  set_mode('regression')
 
 
-xgb_rec <- recipe(rank ~ ., data = df_train) %>%
-  step_mutate(month = factor(month), year = factor(year)) %>%
-  step_dummy(all_nominal(), -all_outcomes()) %>%
-  step_normalize(all_numeric(), -all_outcomes())
+xgb_rec <- recipe(hours_watched ~ year + hours_streamed + peak_viewers + peak_channels +
+                    streamers + avg_viewer_ratio, data = df_train) %>%
+  step_dummy(all_nominal(), one_hot = TRUE)
+
+
+
 
 xgb_wf <- workflow() %>%
   add_model(xgb_spec) %>%
   add_recipe(xgb_rec)
 
+folds <- df_train %>%
+  vfold_cv(v=10)
 
 
+
+library(finetune)
+library(tictoc)
+
+
+cores <- parallel::detectCores(logical = FALSE)
+cores
+
+cl <- makePSOCKcluster(cores - 1)
+registerDoParallel(cl)
+
+
+
+tic()
+xg_fit_reg <- tune_grid(xgb_wf,
+                        folds,
+                        grid = 10,
+                        metrics = metric_set(rmse),
+                        control = control_grid(verbose = TRUE, 
+                                               parallel_over = "everything"))
+toc()
+
+
+autoplot(xg_fit_reg)
+
+
+xg_fit_reg %>%
+  collect_metrics() %>%
+  arrange(desc(mean))
+
+
+xgb_best <- xgb_wf %>%
+  finalize_workflow(select_best(xg_fit_reg))
+
+xgb_best_fit <- xgb_best %>%
+  fit(df_train)
+
+
+xgb_best_fit %>%
+  augment(df_test) %>%
+  arrange(desc(.pred)) %>%
+  mutate(Rank = 1:200) %>%
+  select(Game = game, Rank) %>%
+  write_csv("sub_rank.csv")
+
+
+
+tic()
 xg_fit <- xgb_wf %>%
-  fit(data = df_train)
-  
+  tune_race_anova(folds,
+                  grid = 10,
+                  metrics = metric_set(rmse),
+                  control = control_race(verbose_elim = TRUE))
+toc()
 
-df_train %>%
-  cbind(., predict(xg_fit, ., type = "class")) %>%
-  accuracy(rank, .pred_class)
+plot_race(xg_fit)
 
-df_test %>%
-  cbind(., predict(xg_fit, ., type = "class")) %>%
-  select(Game = game, Rank = .pred_class) %>%
-  arrange(Rank) %>%
-  write_csv("second_sub.csv")
-
-
-# random forrest ----------------------------------------------------------------
-
-library(baguette)
+xg_fit %>% 
+  collect_metrics() %>%
+  arrange(desc(mean))
 
 
-
-rec <- recipe(rank ~ ., data = df_train) %>%
-  step_mutate(month = factor(month), year = factor(year)) %>%
-  step_dummy(all_nominal(), -all_outcomes()) %>%
-  step_normalize(all_numeric(), -all_outcomes())
-
-bag_spec <-
-  bag_tree(min_n = 10) %>%
-  set_engine("rpart", times = 25) %>%
-  set_mode("classification")
+xg_fit_best <- xgb_wf %>%
+  finalize_workflow(select_best(xg_fit))
 
 
-bag_wf <- workflow() %>%
-  add_model(bag_spec) %>%
-  add_recipe(rec)
+xg_fit_best <- xg_fit_best %>%
+  fit(df_train)
 
-set.seed(123)
-bag_fit <- fit(bag_wf, data = df_train)
-bag_fit
-
-
-df_test %>%
-  cbind(., predict(bag_fit, ., type = "class")) %>%
-  select(Game = game, Rank = .pred_class) %>%
-  arrange(Rank) %>%
-  write_csv("first_sub.csv")
-
-
-
-## Placed 19th
-
-
-
+xg_fit_best %>%
+  augment(df_test) %>%
+  arrange(desc(.pred)) %>%
+  mutate(Rank = 1:200) %>%
+  select(Game = game, Rank) %>%
+  write_csv("sub_rank2.csv")
 
 
 
