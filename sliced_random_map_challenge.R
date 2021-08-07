@@ -17,9 +17,7 @@ df_sp <- ct %>%
   filter(STATEFP != 15) %>%
   mutate(p_diff = votes_gop/total_votes) 
 
-o <- df_sp %>%
-  filter(STATEFP != 15) %>%
-  mutate(p_diff = votes_gop/total_votes) %>%
+df_sp %>%
   ggplot(aes(fill = p_diff)) +
   geom_sf(lwd = 0.4) +
   borders("state") +  
@@ -30,13 +28,8 @@ o <- df_sp %>%
 
 o
 
-ggsave("my_plot.png", device = "png", dpi = 450, bg = "white")
+ggsave("gop_plot.png", device = "png", dpi = 300, bg = "white")
  
-
-leaflet(df_sp) %>%
-  addProviderTiles(providers$Stamen.Toner) %>%
-  addPolygons(fillColor = ~p_diff)
-
 
 
 
