@@ -102,8 +102,6 @@ full_train <- train_raw %>%
   mutate(genres = str_remove_all(genres, "\\[|\\]|\\'")) 
 
 
-
-
 # some NLP
 full_train %>%
   count(genres) %>%
