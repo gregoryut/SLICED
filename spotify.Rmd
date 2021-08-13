@@ -22,12 +22,12 @@ library(tidytext)
 ```{r}
 # import data -------------------------------------------------------------
 
-test_raw <- read_csv(here("ep5", "test.csv"))
+test_raw <- read_csv(here("test.csv"))
 
-train_raw <- read_csv(here("ep5", "train.csv"))
+train_raw <- read_csv(here("train.csv"))
 
 
-artists_raw <- read_csv(here("ep5", "artists.csv"))
+artists_raw <- read_csv(here("artists.csv"))
 
 
 glimpse(train_raw)
@@ -99,9 +99,9 @@ full_train <- train_raw %>%
     by = "id_artists",
     suffix = c("_1", "_2")
   ) %>%
-  mutate(genres = str_remove_all(genres, "\\[|\\]|\\'")) %>%
-  unnest_tokens(text, genres) %>%
-  mutate(genres = fct_lump(text, n = 20))
+  mutate(genres = str_remove_all(genres, "\\[|\\]|\\'")) 
+
+
 
 
 # some NLP
@@ -111,8 +111,6 @@ full_train %>%
   geom_bar(stat = "identity", position = "dodge") +
   coord_flip() +
   theme_minimal()
-
-
 
 
 
@@ -140,42 +138,53 @@ rec <- recipe(popularity ~ danceability + energy + key + loudness + acousticness
   step_dummy(all_nominal_predictors())
 
 
-bag_spec <-
-  baguette::bag_tree(cost_complexity = tune(), tree_depth = tune()) %>%
-  set_engine('rpart') %>%
-  set_mode('regression')
+xgb_spec <- boost_tree(
+  mode = "regression",
+  trees = tune(),
+  mtry = tune(),
+  min_n = tune(),
+  learn_rate = tune()
+) %>%
+  set_engine("xgboost")
+
+xgb_wf <- workflow(rec, xgb_spec)
 
 
+xgb_grid <- grid_latin_hypercube(
+  trees(),
+  finalize(mtry(), full_train),
+  min_n(),
+  learn_rate(),
+  size = 15
+)
 
-ranger_wf <- workflow() %>%
-  add_model(bag_spec) %>%
-  add_recipe(rec)
+xgb_grid
+
+tune_xgb <- tune_grid(xgb_wf,
+                      folds,
+                      grid = xgb_grid,
+                      metrics = metric_set(rmse),
+                      control = control_grid(verbose = TRUE))
 
 
-tune_rang <- ranger_wf %>%
-  tune_grid(folds,
-            metrics = metric_set(rmse),
-            control = control_grid(verbose = TRUE))
+autoplot(tune_xgb)
 
-autoplot(tune_rang)
+tune_xgb %>%
+  collect_metrics() %>% 
+  arrange(mean)
 
-bag_best <- ranger_wf %>%
-  finalize_workflow(select_best(tune_rang))
-
-
-bag_best_fit <- bag_best %>%
+xgb_best <- xgb_wf %>%
+  finalize_workflow(select_best(tune_xgb, "rmse")) %>%
   fit(full_train)
 
 
-# private 12.34283
-# public 11.90851
-bag_best_fit %>%
-  augment(test_full) %>%
-  select(id, popularity = .pred) %>%
-  write_csv('sub.csv')
 
-
-
+## private score : 11.96085
+## public score : 11.32274
+xgb_best %>%
+  augment(test_full) %>% 
+  select(id, popularity = .pred) %>% 
+  write_csv("sub_xgb.csv")
 
 
 
