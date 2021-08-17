@@ -2,8 +2,6 @@ library(tidyverse)
 library(here)
 library(sf)
 library(tigris)
-library(leaflet)
-
 
 
 df <- read_csv("https://raw.githubusercontent.com/magi-1/presidential-elections/main/Data/TAMIDS%20Given/county_level.csv")
