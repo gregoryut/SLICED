@@ -26,46 +26,6 @@ df_sp %>%
   theme(plot.background = element_rect(fill = "black", color = "black")) +
   theme_minimal()
 
-o
 
 ggsave("gop_plot.png", device = "png", dpi = 300, bg = "white")
  
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
